@@ -8,7 +8,7 @@ It reads the device with [bluetti-bt-lib](https://github.com/reply-nick/bluetti-
 
 - publishes one **retained JSON state document** per poll to `bluetti/<device_id>/state`
 - pushes **Home Assistant MQTT discovery** config for each supported field
-  (`<prefix>/sensor/bluetti/<device_id>/<field>/config`), with `device_class`,
+  (`<prefix>/sensor/<device_id>_<field>/config`), with `device_class`,
   units, `value_template`, and a device block
 - maintains an **availability topic** (`bluetti/<device_id>/availability`, LWT) so
   Home Assistant marks the device *unavailable* during BLE stalls instead of

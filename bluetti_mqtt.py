@@ -226,7 +226,7 @@ async def publish_discovery(
             continue
 
         topic = (
-            f"{cfg.discovery_prefix}/sensor/bluetti/{dev_id}/{field_name}/config"
+            f"{cfg.discovery_prefix}/sensor/{dev_id}_{field_name}/config"
         )
         config: dict = {
             "name": meta["label"],
