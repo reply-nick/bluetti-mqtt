@@ -1,0 +1,14 @@
+[Unit]
+Description=bluetti-mqtt (FP -> Home Assistant MQTT)
+After=bluetooth.service network.target
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/bluetti-nut/bin/python /root/bluetti-mqtt/bluetti_mqtt.py --config /root/bluetti-mqtt/config.ini
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
