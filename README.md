@@ -10,6 +10,11 @@ It reads the device with [bluetti-bt-lib](https://github.com/reply-nick/bluetti-
 - pushes **Home Assistant MQTT discovery** config for each supported field
   (`<prefix>/sensor/<device_id>_<field>/config`), with `device_class`,
   units, `value_template`, and a device block
+- writes every poll result to a local JSON file (`[bluetti] state_file`,
+  default `/run/bluetti/state.json`) used by
+  [bluetti-mqtt-nut-bridge](https://github.com/reply-nick/bluetti-mqtt-nut-bridge):
+  failures keep the last-known-good fields and add a `connection` block
+  (`status: offline`, `fail_streak`, `last_error`, ...)
 - maintains an **availability topic** (`bluetti/<device_id>/availability`, LWT) so
   Home Assistant marks the device *unavailable* during BLE stalls instead of
   showing stale numbers
