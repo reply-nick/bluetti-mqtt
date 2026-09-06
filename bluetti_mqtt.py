@@ -14,6 +14,7 @@ import asyncio
 import configparser
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -135,6 +136,7 @@ class Config:
     name: str
     poll_interval: float
     read_timeout: float
+    state_file: str
     discovery_prefix: str
     mqtt_host: str
     mqtt_port: int
@@ -159,6 +161,7 @@ def load_config(path: str) -> Config:
         name=bluetti.get("name", "").strip(),
         poll_interval=float(bluetti.get("poll_interval", "20")),
         read_timeout=float(bluetti.get("read_timeout", "40")),
+        state_file=bluetti.get("state_file", "").strip(),
         discovery_prefix=mqtt.get("discovery_prefix", "homeassistant").strip(),
         mqtt_host=mqtt.get("host", "").strip(),
         mqtt_port=int(mqtt.get("port", "1883")),
@@ -196,18 +199,39 @@ def _json_value(value):
     return value
 
 
-def build_payload(data: dict) -> str:
-    payload = {key: _json_value(value) for key, value in data.items()}
-    payload["timestamp"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return json.dumps(payload, default=str)
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def poll_once(reader: DeviceReader, timeout: float) -> dict | None:
+def write_state_file(path: str, payload: dict) -> None:
+    if not path:
+        return
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        fh.write(json.dumps(payload, default=str) + "\n")
+        os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def connection_block(status: str, fail_streak: int, last_ok: str, err: str | None = None) -> dict:
+    block = {
+        "status": status,
+        "fail_streak": fail_streak,
+        "last_ok": last_ok,
+    }
+    if err:
+        block["last_error"] = err
+        block["last_fail"] = now_iso()
+    return block
+
+
+async def poll_once(reader: DeviceReader, timeout: float) -> tuple[dict | None, str | None]:
     try:
-        return await asyncio.wait_for(reader.read(), timeout=timeout)
+        data = await asyncio.wait_for(reader.read(), timeout=timeout)
+        return data, None
     except (asyncio.TimeoutError, TimeoutError) as err:
-        _LOGGER.warning("BLE read timed out after %ss (%s)", timeout, type(err).__name__)
-        return None
+        return None, f"BLE read timed out after {timeout}s ({type(err).__name__})"
 
 
 async def publish_discovery(
@@ -277,6 +301,7 @@ async def publisher_loop(
         connect_kwargs["tls_params"] = aiomqtt.TLSParameters()
 
     fail_streak = 0
+    last_state: dict | None = None
     while True:
         try:
             async with aiomqtt.Client(**connect_kwargs) as client:
@@ -294,13 +319,24 @@ async def publisher_loop(
 
                 fail_streak = 0
                 while True:
-                    data = await poll_once(reader, cfg.read_timeout)
+                    data, err = await poll_once(reader, cfg.read_timeout)
                     if data:
                         fail_streak = 0
+                        fields = {key: _json_value(value) for key, value in data.items()}
+                        ts = now_iso()
+                        conn = connection_block("online", 0, ts)
+                        file_state = {**fields, "timestamp": ts, "connection": conn}
+                        last_state = file_state
+                        write_state_file(cfg.state_file, file_state)
+
                         await client.publish(
                             availability_topic, "online", qos=1, retain=True
                         )
-                        await client.publish(state_topic, build_payload(data), retain=True)
+                        await client.publish(
+                            state_topic,
+                            json.dumps({key: value for key, value in file_state.items() if key != "connection"}, default=str),
+                            retain=True,
+                        )
                         _LOGGER.info(
                             "Published %d fields (soc=%s%% ac_in=%sW)",
                             len(data),
@@ -309,13 +345,31 @@ async def publisher_loop(
                         )
                     else:
                         fail_streak += 1
-                        if fail_streak >= 2:
+                        offline_now = fail_streak >= 2
+                        if offline_now:
                             await client.publish(
                                 availability_topic, "offline", qos=1, retain=True
                             )
+
+                        base = {k: v for k, v in (last_state or {}).items() if k != "connection"}
+                        if not base:
+                            base = {"timestamp": now_iso()}
+                        last_ok = (last_state or {}).get("connection", {}).get("last_ok", base.get("timestamp", ""))
+                        file_state = {
+                            **base,
+                            "connection": connection_block(
+                                "offline" if offline_now else "online",
+                                fail_streak,
+                                last_ok,
+                                err,
+                            ),
+                        }
+                        write_state_file(cfg.state_file, file_state)
                         _LOGGER.warning(
-                            "Read failed (streak %d) - keeping last-known-good",
+                            "Read failed (streak %d, %s) - keeping last-known-good%s",
                             fail_streak,
+                            err,
+                            "" if last_state else " (no data yet)",
                         )
                     await asyncio.sleep(cfg.poll_interval)
         except aiomqtt.MqttError as err:
